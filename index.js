@@ -79,7 +79,7 @@ client.on("messageCreate", async (message) => {
       .join("\n");
     const aiReply = await generateAIReply(conversation);
     if (!aiReply) return;
-    await thread.send(aiReply);
+    await thread.send("呼んでくれてありがとう。ちょっと考えてみたよ。\n\n" + aiReply);
     return;
   }
   /* ========= 人間返信タグ ========= */
@@ -154,4 +154,5 @@ async function generateAIReply(text) {
 
 /* ========= ログイン ========= */
 client.login(process.env.DISCORD_TOKEN);
+
 
