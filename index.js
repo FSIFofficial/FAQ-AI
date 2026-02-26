@@ -14,6 +14,20 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+/* ========= 投稿時間制限 ========= */
+function isAllowedTime() {
+  const now = new Date();
+  const day = now.getDay(); 
+  // 0日 6土
+  const hour = now.getHours();
+  // 土日
+  if (day === 0 || day === 6) {
+    return hour >= 12 && hour < 22;
+  }
+  // 平日
+  return hour >= 7 && hour < 22;
+}
+
 /* ========= プロンプト ========= */
 const SYSTEM_PROMPT = `
 あなたは「Cosmo Base」という、初心者歓迎の宇宙コミュニティのAIです。
@@ -38,9 +52,10 @@ const SYSTEM_PROMPT = `
   「他の人はどう考えているのか、ちょっと聞いてみたいな」
   「いろんな視点がありそうで、気になるな」
   などのように、
-  “自分も興味を持っている”ニュアンスで終える
+“自分も興味を持っている”ニュアンスで終える
 ・「聞いてみてください」「質問してみてください」は使わない
 `;
+
 
 /* ========= 起動 ========= */
 client.once("clientReady", async () => {
@@ -53,8 +68,10 @@ client.once("clientReady", async () => {
 });
 
 /* ========= 新規スレッド作成 ========= */
+
 client.on("threadCreate", async (thread) => {
   try {
+    if (!isAllowedTime()) return;
     if (thread.parentId !== process.env.QUESTION_CHANNEL_ID) return;
     if (thread.appliedTags.includes(process.env.AI_REPLIED_TAG_ID)) return;
     await handleThread(thread);
@@ -63,13 +80,15 @@ client.on("threadCreate", async (thread) => {
   }
 });
 
-/* ========= 人間返信タグ ========= */
+/* ========= メッセージ検知 ========= */
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
   if (!message.channel.isThread()) return;
   const thread = message.channel;
+
   /* ========= メンションされたら再回答 ========= */
   if (message.mentions.has(client.user)) {
+    if (!isAllowedTime()) return;
     console.log("メンション検知");
     const messages = await thread.messages.fetch({ limit: 100 });
     const conversation = [...messages.values()]
@@ -77,11 +96,15 @@ client.on("messageCreate", async (message) => {
       .filter(m => !m.author.bot)
       .map(m => `${m.author.username}: ${m.content}`)
       .join("\n");
+
     const aiReply = await generateAIReply(conversation);
     if (!aiReply) return;
-    await thread.send("呼んでくれてありがとう。ちょっと考えてみたよ。\n\n" + aiReply);
+    await thread.send(
+      "呼んでくれてありがとう。ちょっと考えてみたよ。\n\n" + aiReply
+    );
     return;
   }
+
   /* ========= 人間返信タグ ========= */
   if (!thread.appliedTags.includes(process.env.HUMAN_REPLIED_TAG_ID)) {
     await thread.setAppliedTags([
@@ -93,6 +116,7 @@ client.on("messageCreate", async (message) => {
 
 /* ========= 起動時スキャン ========= */
 async function scanUnansweredThreads() {
+  if (!isAllowedTime()) return;
   const channel = await client.channels.fetch(
     process.env.QUESTION_CHANNEL_ID
   );
@@ -154,5 +178,3 @@ async function generateAIReply(text) {
 
 /* ========= ログイン ========= */
 client.login(process.env.DISCORD_TOKEN);
-
-
