@@ -168,9 +168,10 @@ async function generateAIReply(text) {
 
     return result.response.text();
 
-  } catch (err) {
-    console.log("Geminiエラー");
+  }catch (err) {
+    console.error("Geminiエラー詳細:", err);
     return null;
+    }
   }
 }
 
