@@ -132,6 +132,24 @@ async function scanUnansweredThreads() {
 /* ========= スレッド処理 ========= */
 async function handleThread(thread) {
   try {
+
+    // ===== すでに成功済みなら終了 =====
+    if (thread.appliedTags.includes(process.env.AI_REPLIED_TAG_ID)) {
+      return;
+    }
+
+    // ===== 失敗回数取得 =====
+    let failCount = 0;
+    const match = thread.name.match(/\[FAIL:(\d+)\]/);
+    if (match) {
+      failCount = parseInt(match[1]);
+    }
+
+    // ===== 3回失敗で打ち止め =====
+    if (failCount >= 3) {
+      console.log("失敗上限 → スキップ");
+      return;
+    }
     const messages = await thread.messages.fetch({ limit: 10 });
     const firstMessage = [...messages.values()]
       .reverse()
@@ -139,12 +157,28 @@ async function handleThread(thread) {
     if (!firstMessage) return;
     console.log("AI回答生成:", firstMessage.content);
     const aiReply = await generateAIReply(firstMessage.content);
-    if (!aiReply) return;
-    await thread.send(aiReply);
-    await thread.setAppliedTags([
-      ...thread.appliedTags,
-      process.env.AI_REPLIED_TAG_ID,
-    ]);
+
+    // ===== 成功 =====
+    if (aiReply) {
+      await thread.send(aiReply);
+      await thread.setAppliedTags([
+        ...thread.appliedTags,
+        process.env.AI_REPLIED_TAG_ID,
+      ]);
+      console.log("AI回答成功");
+      return;
+    }
+
+    // ===== 失敗（再試行） =====
+    failCount++;
+    let newName;
+    if (thread.name.match(/\[FAIL:\d+\]/)) {
+      newName = thread.name.replace(/\[FAIL:\d+\]/, `[FAIL:${failCount}]`);
+    } else {
+      newName = thread.name + ` [FAIL:${failCount}]`;
+    }
+    await thread.setName(newName);
+    console.log(`AI失敗 → 次回再試行 (${failCount})`);
   } catch (err) {
     console.error("handleThread error:", err);
   }
