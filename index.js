@@ -56,6 +56,7 @@ const SYSTEM_PROMPT = `
 /* ========= 起動 ========= */
 client.once("clientReady", async () => {
   console.log(`🤖 Logged in as ${client.user.tag}`);
+  console.log("KEY:", process.env.GEMINI_API_KEY);
   await scanUnansweredThreads();
 });
 
