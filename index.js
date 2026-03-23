@@ -171,7 +171,6 @@ async function generateAIReply(text) {
   }catch (err) {
     console.error("Geminiエラー詳細:", err);
     return null;
-    }
   }
 }
 
