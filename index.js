@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { Client, GatewayIntentBits, ChannelType } from "discord.js";
-import OpenAI from "openai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 
 const client = new Client({
   intents: [
@@ -10,21 +10,18 @@ const client = new Client({
   ],
 });
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 /* ========= 投稿時間制限 ========= */
 function isAllowedTime() {
   const now = new Date();
-  const day = now.getDay(); 
-  // 0日 6土
+  const day = now.getDay();
   const hour = now.getHours();
-  // 土日
+
   if (day === 0 || day === 6) {
     return hour >= 12 && hour < 22;
   }
-  // 平日
+
   return hour >= 7 && hour < 22;
 }
 
@@ -56,60 +53,51 @@ const SYSTEM_PROMPT = `
 ・「聞いてみてください」「質問してみてください」は使わない
 `;
 
-
 /* ========= 起動 ========= */
 client.once("clientReady", async () => {
   console.log(`🤖 Logged in as ${client.user.tag}`);
-  try {
-    await scanUnansweredThreads();
-  } catch (err) {
-    console.error("起動スキャン失敗:", err);
-  }
+  await scanUnansweredThreads();
 });
 
-/* ========= 新規スレッド作成 ========= */
-
+/* ========= スレッド作成 ========= */
 client.on("threadCreate", async (thread) => {
-  try {
-    if (!isAllowedTime()) return;
-    if (thread.parentId !== process.env.QUESTION_CHANNEL_ID) return;
-    if (thread.appliedTags.includes(process.env.AI_REPLIED_TAG_ID)) return;
-    await handleThread(thread);
-  } catch (err) {
-    console.error("threadCreate error:", err);
-  }
+  if (!isAllowedTime()) return;
+  if (thread.parentId !== process.env.QUESTION_CHANNEL_ID) return;
+  if (thread.appliedTags.includes(process.env.AI_REPLIED_TAG_ID)) return;
+
+  await handleThread(thread);
 });
 
-/* ========= メッセージ検知 ========= */
+/* ========= メッセージ ========= */
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
   if (!message.channel.isThread()) return;
+
   const thread = message.channel;
 
-  /* ========= メンションされたら再回答 ========= */
   if (message.mentions.has(client.user)) {
     if (!isAllowedTime()) return;
-    console.log("メンション検知");
-    const messages = await thread.messages.fetch({ limit: 100 });
-    const conversation = [...messages.values()]
+
+    const messages = await thread.messages.fetch({ limit: 50 });
+
+    const text = [...messages.values()]
       .reverse()
       .filter(m => !m.author.bot)
       .map(m => `${m.author.username}: ${m.content}`)
       .join("\n");
 
-    const aiReply = await generateAIReply(conversation);
-    if (!aiReply) return;
-    await thread.send(
-      "呼んでくれてありがとう。ちょっと考えてみたよ。\n\n" + aiReply
-    );
+    const reply = await generateAIReply(text);
+
+    if (!reply) return;
+
+    await thread.send("呼んでくれてありがとう。\n\n" + reply);
     return;
   }
 
-  /* ========= 人間返信タグ ========= */
   if (!thread.appliedTags.includes(process.env.HUMAN_REPLIED_TAG_ID)) {
     await thread.setAppliedTags([
       ...thread.appliedTags,
-      process.env.HUMAN_REPLIED_TAG_ID
+      process.env.HUMAN_REPLIED_TAG_ID,
     ]);
   }
 });
@@ -117,95 +105,71 @@ client.on("messageCreate", async (message) => {
 /* ========= 起動時スキャン ========= */
 async function scanUnansweredThreads() {
   if (!isAllowedTime()) return;
+
   const channel = await client.channels.fetch(
     process.env.QUESTION_CHANNEL_ID
   );
+
   if (channel.type !== ChannelType.GuildForum) return;
+
   const threads = await channel.threads.fetchActive();
+
   for (const thread of threads.threads.values()) {
-    if (thread.appliedTags.includes(process.env.AI_REPLIED_TAG_ID))
-      continue;
+    if (thread.appliedTags.includes(process.env.AI_REPLIED_TAG_ID)) continue;
     await handleThread(thread);
   }
 }
 
 /* ========= スレッド処理 ========= */
 async function handleThread(thread) {
-  try {
 
-    // ===== すでに成功済みなら終了 =====
-    if (thread.appliedTags.includes(process.env.AI_REPLIED_TAG_ID)) {
-      return;
-    }
+  let failCount = 0;
+  const match = thread.name.match(/\[FAIL:(\d+)\]/);
+  if (match) failCount = parseInt(match[1]);
 
-    // ===== 失敗回数取得 =====
-    let failCount = 0;
-    const match = thread.name.match(/\[FAIL:(\d+)\]/);
-    if (match) {
-      failCount = parseInt(match[1]);
-    }
+  if (failCount >= 3) return;
 
-    // ===== 3回失敗で打ち止め =====
-    if (failCount >= 3) {
-      console.log("失敗上限 → スキップ");
-      return;
-    }
-    const messages = await thread.messages.fetch({ limit: 10 });
-    const firstMessage = [...messages.values()]
-      .reverse()
-      .find((m) => !m.author.bot);
-    if (!firstMessage) return;
-    console.log("AI回答生成:", firstMessage.content);
-    const aiReply = await generateAIReply(firstMessage.content);
+  const messages = await thread.messages.fetch({ limit: 10 });
 
-    // ===== 成功 =====
-    if (aiReply) {
-      await thread.send(aiReply);
-      await thread.setAppliedTags([
-        ...thread.appliedTags,
-        process.env.AI_REPLIED_TAG_ID,
-      ]);
-      console.log("AI回答成功");
-      return;
-    }
+  const firstMessage = [...messages.values()]
+    .reverse()
+    .find(m => !m.author.bot);
 
-    // ===== 失敗（再試行） =====
-    failCount++;
-    let newName;
-    if (thread.name.match(/\[FAIL:\d+\]/)) {
-      newName = thread.name.replace(/\[FAIL:\d+\]/, `[FAIL:${failCount}]`);
-    } else {
-      newName = thread.name + ` [FAIL:${failCount}]`;
-    }
-    await thread.setName(newName);
-    console.log(`AI失敗 → 次回再試行 (${failCount})`);
-  } catch (err) {
-    console.error("handleThread error:", err);
+  if (!firstMessage) return;
+
+  const reply = await generateAIReply(firstMessage.content);
+
+  if (reply) {
+    await thread.send(reply);
+
+    await thread.setAppliedTags([
+      ...thread.appliedTags,
+      process.env.AI_REPLIED_TAG_ID,
+    ]);
+
+    return;
   }
+
+  failCount++;
+
+  const newName = thread.name.replace(/\[FAIL:\d+\]/, "") + ` [FAIL:${failCount}]`;
+
+  await thread.setName(newName);
 }
 
 /* ========= AI生成 ========= */
 async function generateAIReply(text) {
   try {
-    const res = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      temperature: 0.4,
-      max_tokens: 400,
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        {
-          role: "user",
-          content: text
-        }
-      ],
-    });
-    return res.choices[0].message.content;
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+
+    const result = await model.generateContent(
+      SYSTEM_PROMPT + "\n\n" + text
+    );
+
+    return result.response.text();
+
   } catch (err) {
-    if (err.code === "insufficient_quota") {
-      console.log("Quota不足 → スキップ");
-      return null;
-    }
-    console.error(err);
+    console.log("Geminiエラー");
     return null;
   }
 }
